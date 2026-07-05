@@ -1,0 +1,16 @@
+# Private cloud deploy (keep locally, not for open source)
+deploy/
+
+# Runtime data
+__pycache__/
+*.py[cod]
+*.db
+*.db-journal
+thumb-cache/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,20 @@
+[Unit]
+Description=LAN Share Hub — local network file sharing
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/lan-share
+ExecStart=/usr/bin/python3 %h/lan-share/server.py
+Restart=on-failure
+RestartSec=3
+
+# Optional overrides (uncomment and edit):
+# Environment=HUB_PORT=8888
+# Environment=HUB_SERVE_DIR=%h
+# Environment=HUB_UPLOAD_DIR=%h/lan-share/inbox
+# Environment=HUB_DB_PATH=%h/.config/lan-share/messages.db
+
+[Install]
+WantedBy=default.target
