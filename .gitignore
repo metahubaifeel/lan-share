@@ -1,5 +1,7 @@
-# Private cloud deploy (keep locally, not for open source)
+# Private / local only
 deploy/
+口播稿*.md
+*.local.md
 
 # Runtime data
 __pycache__/
