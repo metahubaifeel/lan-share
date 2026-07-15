@@ -295,6 +295,21 @@ def db_msgs(since=None, before=None, limit=500):
         rows = db.execute("SELECT id,sender,sender_name,content,created_at FROM messages ORDER BY id DESC LIMIT ?",(limit,)).fetchall()[::-1]
     return [{"id":r[0],"sender":r[1],"sender_name":r[2],"content":r[3],"time":r[4]} for r in rows]
 
+def db_msgs_anchor(anchor_id, radius=120):
+    aid = int(anchor_id)
+    radius = max(20, min(int(radius), 400))
+    lo = max(1, aid - radius)
+    hi = aid + radius
+    rows = db.execute(
+        "SELECT id,sender,sender_name,content,created_at FROM messages WHERE id BETWEEN ? AND ? ORDER BY id",
+        (lo, hi),
+    ).fetchall()
+    has_more_before = lo > 1
+    has_more_after = db.execute("SELECT 1 FROM messages WHERE id>? LIMIT 1", (hi,)).fetchone() is not None
+    oldest = rows[0][0] if rows else 0
+    msgs = [{"id":r[0],"sender":r[1],"sender_name":r[2],"content":r[3],"time":r[4]} for r in rows]
+    return msgs, has_more_before, has_more_after, oldest
+
 def db_msg_count():
     return db.execute("SELECT COUNT(*) FROM messages").fetchone()[0]
 
@@ -1176,7 +1191,7 @@ body.hub-lan .file-src-bar{display:flex}
 .search-hint{padding:8px 14px;font-size:11px;color:var(--ad);font-family:var(--fm);border-bottom:1px solid var(--bd)}
 .search-results{flex:1;overflow-y:auto;padding:8px 0;-webkit-overflow-scrolling:touch}
 .search-group{padding:6px 12px 2px;font-size:10px;color:var(--ad);font-family:var(--fm);letter-spacing:.08em}
-.search-item{display:block;width:100%;text-align:left;padding:10px 14px;border:none;border-bottom:1px solid var(--bd);background:transparent;color:var(--tx);cursor:pointer;font-family:var(--fs);font-size:13px;line-height:1.5}
+.search-item{display:block;width:100%;text-align:left;padding:10px 14px;border:none;border-bottom:1px solid var(--bd);background:transparent;color:var(--tx);cursor:pointer;font-family:var(--fs);font-size:13px;line-height:1.5;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
 .search-item:active,.search-item:hover{background:var(--s1)}
 .search-item .sr-snippet{color:var(--tx);word-break:break-word;white-space:pre-wrap}
 .search-item .sr-meta{font-size:11px;color:var(--ad);margin-top:4px;font-family:var(--fm)}
@@ -1800,6 +1815,7 @@ function ubd(){var b=$('ub');b.textContent=uc>0?uc:''}
 
 // ═══ Search ═══
 var searchScope='all',searchTimer=null,searchBusy=false;
+var lastSearchFiles=[],lastSearchMsgs=[];
 function openSearch(){
   var ov=$('search-overlay');if(!ov)return;
   ov.classList.add('show');
@@ -1846,17 +1862,65 @@ function renderSearchResults(d){
     });
   }
   box.innerHTML=html;
-  box.querySelectorAll('.search-item').forEach(function(btn){
-    btn.addEventListener('click',function(){
-      sfxClick();
-      if(btn.getAttribute('data-kind')==='msg')jumpToMessage(parseInt(btn.getAttribute('data-mid'),10));
-      else{
-        var fi=parseInt(btn.getAttribute('data-fi'),10);
-        var f=fs[fi];
-        if(f)openSearchFile(f.relpath,f.name);
-      }
-    });
-  });
+  lastSearchFiles=fs;
+  lastSearchMsgs=ms;
+}
+function scrollToMsg(row){
+  if(!row)return;
+  row.classList.add('msg-flash');
+  row.scrollIntoView({behavior:'smooth',block:'center'});
+  setTimeout(function(){row.classList.remove('msg-flash')},2400);
+}
+function expandMsgRow(row){
+  if(!row)return;
+  var inner=row.querySelector('.mb-collapsed');
+  if(inner){
+    inner.classList.remove('mb-collapsed');
+    var wrap=inner.parentElement;
+    if(wrap)wrap.classList.add('mb-expanded');
+    var btns=wrap?wrap.querySelectorAll('.expand-btn'):[];
+    btns.forEach(function(b){b.textContent=b.classList.contains('expand-top')?'↑ 收起':'收起'});
+  }
+}
+async function jumpToMessage(mid){
+  if(!mid||isNaN(mid))return;
+  closeSearch();
+  sw('chat');
+  chatFilter='all';
+  var cfAll=$('cf-all'),cfText=$('cf-text');
+  if(cfAll)cfAll.classList.add('on');
+  if(cfText)cfText.classList.remove('on');
+  applyChatFilter();
+  toast('定位消息中…');
+  await new Promise(function(r){requestAnimationFrame(function(){requestAnimationFrame(r)})});
+  var row=document.querySelector('#ca .mr[data-mid="'+mid+'"]');
+  if(!row){
+    try{
+      var wait=0;
+      while(fetching&&wait<40){await new Promise(function(r){setTimeout(r,50)});wait++}
+      var r=await fetch('/api/messages?meta=1&anchor='+mid);
+      var d=await r.json();
+      var ms=(d&&d.messages)?d.messages:[];
+      if(!ms.length){toast('消息不存在或已删除');return}
+      ram(ms);
+      if(d&&typeof d.total==='number'){msgTotal=d.total;msgHasMore=!!d.has_more;msgOldest=d.oldest_id||0}
+      if(d&&typeof d.epoch==='number')msgEpoch=d.epoch;
+      if(ms.length)lid=ms[ms.length-1].id;
+      updLoadOlder();
+      applyChatFilter();
+      await new Promise(function(r){requestAnimationFrame(r)});
+      row=document.querySelector('#ca .mr[data-mid="'+mid+'"]');
+    }catch(e){
+      console.error('jumpToMessage',e);
+      toast('定位失败，请重试');
+      return;
+    }
+  }
+  if(row){
+    expandMsgRow(row);
+    scrollToMsg(row);
+    toast('已定位到消息');
+  }else toast('无法定位到该消息');
 }
 async function runSearch(q){
   if(!q||q.length<1){renderSearchResults(null);return}
@@ -1873,44 +1937,6 @@ async function runSearch(q){
   }
   searchBusy=false;
 }
-function scrollToMsg(row){
-  if(!row)return;
-  row.classList.add('msg-flash');
-  row.scrollIntoView({behavior:'smooth',block:'center'});
-  setTimeout(function(){row.classList.remove('msg-flash')},2400);
-}
-async function jumpToMessage(mid){
-  if(!mid)return;
-  closeSearch();
-  sw('chat');
-  chatFilter='all';
-  var cfAll=$('cf-all'),cfText=$('cf-text');
-  if(cfAll)cfAll.classList.add('on');
-  if(cfText)cfText.classList.remove('on');
-  applyChatFilter();
-  var row=document.querySelector('#ca .mr[data-mid="'+mid+'"]');
-  if(!row){
-    await fm(null);
-    row=document.querySelector('#ca .mr[data-mid="'+mid+'"]');
-  }
-  var guard=0;
-  while(!row&&msgHasMore&&guard<30){
-    guard++;
-    await loadOlderMsgs();
-    row=document.querySelector('#ca .mr[data-mid="'+mid+'"]');
-  }
-  if(row){
-    var inner=row.querySelector('.mb-collapsed');
-    if(inner){
-      inner.classList.remove('mb-collapsed');
-      var wrap=inner.parentElement;
-      if(wrap)wrap.classList.add('mb-expanded');
-      var btns=wrap?wrap.querySelectorAll('.expand-btn'):[];
-      btns.forEach(function(b){b.textContent=b.classList.contains('expand-top')?'↑ 收起':'收起'});
-    }
-    scrollToMsg(row);
-  }else toast('消息较旧，请在聊天点「加载更早消息」后再试');
-}
 function openSearchFile(rel,name){
   if(!rel)return;
   closeSearch();
@@ -1925,6 +1951,26 @@ function openSearchFile(rel,name){
 }
 function initSearchUI(){
   var btn=$('search-btn'),close=$('search-close'),inp=$('search-input'),ov=$('search-overlay');
+  var results=$('search-results');
+  if(results&&!results._jumpBound){
+    results._jumpBound=true;
+    function onPick(e){
+      var item=e.target.closest('.search-item[data-kind]');
+      if(!item)return;
+      e.preventDefault();
+      e.stopPropagation();
+      sfxClick();
+      if(item.getAttribute('data-kind')==='msg'){
+        jumpToMessage(parseInt(item.getAttribute('data-mid'),10));
+      }else{
+        var fi=parseInt(item.getAttribute('data-fi'),10);
+        var f=lastSearchFiles[fi];
+        if(f)openSearchFile(f.relpath,f.name);
+      }
+    }
+    results.addEventListener('click',onPick);
+    results.addEventListener('touchend',function(e){onPick(e)},{passive:false});
+  }
   if(btn)btn.addEventListener('click',function(){sfxClick();openSearch()});
   if(close)close.addEventListener('click',function(){sfxClick();closeSearch()});
   if(ov)ov.addEventListener('click',function(e){if(e.target===ov)closeSearch()});
@@ -3996,6 +4042,7 @@ class H(http.server.BaseHTTPRequestHandler):
 
     def _gmsg(self):
         q=urllib.parse.parse_qs(urllib.parse.urlparse(self.path).query)
+        anchor=q.get("anchor",[None])[0]
         since=q.get("since",[None])[0]
         before=q.get("before",[None])[0]
         meta=q.get("meta",[None])[0]
@@ -4003,6 +4050,21 @@ class H(http.server.BaseHTTPRequestHandler):
             limit=int(q.get("limit",["500"])[0])
         except ValueError:
             limit=500
+        if anchor is not None:
+            try:
+                msgs, has_more_before, has_more_after, oldest = db_msgs_anchor(anchor)
+            except (TypeError, ValueError):
+                self._j(400, {"ok": False, "error": "invalid anchor"}); return
+            self._j(200, {
+                "messages": msgs,
+                "total": db_msg_count(),
+                "oldest_id": oldest,
+                "has_more": has_more_before,
+                "has_more_after": has_more_after,
+                "epoch": msg_epoch,
+                "anchor": int(anchor),
+            })
+            return
         msgs=db_msgs(since=since,before=before,limit=limit)
         if meta:
             total=db_msg_count()
